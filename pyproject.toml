@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "moodle-client"
+version = "0.1.0"
+description = "CLI client for Moodle administration tasks"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.32",
+    "browser-cookie3>=0.19",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "click>=8.1",
+    "rich>=13.0",
+]
+
+[project.scripts]
+moodle = "cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["moodle"]
