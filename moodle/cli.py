@@ -19,6 +19,7 @@ from rich import print as rprint
 
 from moodle.session import MoodleSession
 from moodle.activity import get_activity_info, set_activity_end_date
+from moodle.course import list_courses
 
 console = Console()
 
@@ -59,11 +60,11 @@ def site_option(f):
 def cookie_option(f):
     return click.option(
         "--cookie", "-c",
-        default=None,
+        required=True,
         envvar="MOODLE_COOKIE",
         help=(
-            "Raw Cookie header string. "
-            "If omitted, cookies are read from Chrome/Firefox automatically."
+            "Raw Cookie header string (or set MOODLE_COOKIE env var). "
+            "Copy it from the Cookie: request header in browser DevTools."
         ),
     )(f)
 
@@ -87,8 +88,57 @@ def main():
 
 
 @main.group()
+def course():
+    """Commands for listing and managing courses."""
+
+
+@main.group()
 def activity():
     """Commands for managing course activities."""
+
+
+# ---------------------------------------------------------------------------
+# course list
+# ---------------------------------------------------------------------------
+
+@course.command("list")
+@site_option
+@cookie_option
+def course_list(site, cookie):
+    """List all courses you are enrolled in."""
+    with console.status("Connecting to Moodle…"):
+        try:
+            session = MoodleSession.create(site=site, cookie_str=cookie)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    with console.status("Fetching course list…"):
+        try:
+            courses = list_courses(session)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    if not courses:
+        console.print("No courses found.")
+        return
+
+    table = Table(title=f"Courses ({len(courses)})")
+    table.add_column("ID", style="bold cyan", no_wrap=True)
+    table.add_column("Short name", style="bold")
+    table.add_column("Full name")
+    table.add_column("Category", style="dim")
+
+    for c in courses:
+        table.add_row(
+            str(c["id"]),
+            c["shortname"] or "—",
+            c["fullname"],
+            c["category"] or "—",
+        )
+
+    console.print(table)
 
 
 # ---------------------------------------------------------------------------

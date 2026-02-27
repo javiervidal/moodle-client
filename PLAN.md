@@ -6,20 +6,20 @@ This document tracks what has been built, what is in progress, and what is plann
 
 ## Phase 1 — Foundation (done)
 
-- [x] Project scaffold (`pyproject.toml`, `moodle/` package, `cli.py`)
+- [x] Project scaffold (`pyproject.toml`, `moodle/` package, `moodle/cli.py`)
 - [x] **Session layer** (`moodle/session.py`)
-  - Auto-extract cookies from Chrome / Firefox via `browser_cookie3`
-  - Manual fallback via `--cookie` flag or `MOODLE_COOKIE` env var
+  - Cookie auth via `--cookie` flag or `MOODLE_COOKIE` env var
   - Scrape `sesskey` CSRF token from Moodle home page
-  - Thin `get` / `post` wrappers with automatic base-URL resolution
+  - Thin `get` / `post` / `post_json` wrappers with automatic base-URL resolution
 - [x] **Activity module** (`moodle/activity.py`)
   - Fetch and parse `modedit.php` form (all inputs, selects, textareas)
   - Auto-detect end-date field (`timeclose`, `duedate`, `cutoffdate`, `timeend`)
   - Override date selector fields and POST back
   - `--dry-run` mode (shows payload without submitting)
-- [x] **CLI** (`cli.py`)
+- [x] **CLI** (`moodle/cli.py`)
   - `moodle activity info` — display current activity settings
   - `moodle activity set-end` — change end date
+  - `moodle course list` — list all enrolled courses
   - `MOODLE_SITE` / `MOODLE_COOKIE` env-var support
   - Rich terminal output
 
@@ -41,7 +41,7 @@ This document tracks what has been built, what is in progress, and what is plann
 
 > Goal: avoid having to look up cmids by hand in the browser.
 
-- [ ] `moodle course list` — list all courses the user can edit
+- [x] `moodle course list` — list all courses the user can edit
 - [ ] `moodle course activities --course-id <id>` — list all activities in a course
   (name, type, cmid, current open/close dates)
 - [ ] `moodle course sections --course-id <id>` — list sections with their activities

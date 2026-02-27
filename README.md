@@ -10,16 +10,16 @@ No API key required — it reuses your existing browser session.
 
 Moodle's web interface is a set of HTML forms protected by a CSRF token (`sesskey`). This tool:
 
-1. Extracts your session cookies from Chrome or Firefox automatically
+1. Uses your session cookie to authenticate (copied once from browser DevTools)
 2. Scrapes the `sesskey` from the Moodle home page
-3. Fetches activity edit forms, modifies the relevant fields, and submits them — exactly what your browser does, but from the terminal
+3. Fetches and submits Moodle forms — exactly what your browser does, but from the terminal
 
 ---
 
 ## Requirements
 
 - Python 3.10+
-- Chrome or Firefox with an active Moodle session
+- An active Moodle session in your browser
 - `pip`
 
 ---
@@ -34,31 +34,39 @@ pip install -e .
 
 ---
 
-## Usage
+## Authentication
 
-### Set an environment variable to avoid repeating the site URL
+This tool does not extract cookies from your browser automatically. You need to copy the session cookie once from DevTools:
+
+1. Log in to Moodle in your browser
+2. Open DevTools → **Network** tab → reload the page
+3. Click any request to your Moodle site
+4. Under **Request Headers**, find the `Cookie:` line
+5. Copy the value of `MoodleSession…` (you only need that one cookie)
+
+Then export it as an environment variable:
 
 ```bash
 export MOODLE_SITE=https://moodle.example.edu
+export MOODLE_COOKIE="MoodleSessionXXX=abc123"
+```
+
+Add both lines to your `~/.zshrc` (or `~/.bashrc`) to persist them across terminal sessions. You will need to refresh `MOODLE_COOKIE` when your Moodle session expires.
+
+---
+
+## Usage
+
+### List all your courses
+
+```bash
+moodle course list
 ```
 
 ### Show current settings for an activity
 
 ```bash
 moodle activity info --cmid 42
-```
-
-Example output:
-
-```
-┌─────────────────────────────┐
-│   Activity info — cmid 42   │
-├──────────────────┬──────────┤
-│ Name             │ Exam 1   │
-│ Type             │ quiz     │
-│ End date field   │ timeclose│
-│ Current end date │ 2026-05-31 23:59 │
-└──────────────────┴──────────┘
 ```
 
 ### Change the end date of an activity
@@ -76,11 +84,14 @@ moodle activity set-end --cmid 42 --date "2026-06-30 23:59" --dry-run
 ### All options
 
 ```
+moodle course list
+  --site, -s    Base URL of the Moodle site  [env: MOODLE_SITE]
+  --cookie, -c  Raw Cookie header string  [env: MOODLE_COOKIE]
+
 moodle activity info
   --site, -s    Base URL of the Moodle site  [env: MOODLE_SITE]
   --cmid        Course module ID (the number after update= in the edit URL)
-  --cookie, -c  Raw Cookie header string (auto-detected from browser if omitted)
-                [env: MOODLE_COOKIE]
+  --cookie, -c  Raw Cookie header string  [env: MOODLE_COOKIE]
 
 moodle activity set-end
   --site, -s    Base URL of the Moodle site  [env: MOODLE_SITE]
@@ -109,11 +120,8 @@ Open the activity in Moodle and click the edit (pencil) icon. The URL will conta
 
 ## Troubleshooting
 
-**"No cookies found for … in Chrome/Firefox"**
-Make sure you are logged in to Moodle in Chrome or Firefox, and that the browser is not sandboxed. Alternatively, open DevTools → Network → copy the `Cookie` header from any Moodle request and pass it with `--cookie "…"` or set `MOODLE_COOKIE`.
-
 **"Could not extract sesskey"**
-Your session may have expired. Log in again in the browser.
+Your session has expired. Copy a fresh `MoodleSession…` cookie from DevTools and update `MOODLE_COOKIE`.
 
 **"No supported end-date field found"**
 The activity type may use a field name not yet in the detection list. Run with `--dry-run` and check the `_fields` output, then open an issue.
@@ -126,9 +134,10 @@ The activity type may use a field name not yet in the detection list. Run with `
 moodle-client/
 ├── moodle/
 │   ├── __init__.py
-│   ├── session.py      # Cookie extraction, sesskey, HTTP session
-│   └── activity.py     # Activity form parsing and submission
-├── cli.py              # Click-based CLI entry point
+│   ├── session.py      # Cookie auth, sesskey, HTTP session
+│   ├── course.py       # Course listing
+│   ├── activity.py     # Activity form parsing and submission
+│   └── cli.py          # Click-based CLI entry point
 ├── PLAN.md             # Roadmap and planned features
 └── pyproject.toml
 ```

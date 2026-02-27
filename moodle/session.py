@@ -1,8 +1,8 @@
 """
 Moodle session management.
 
-Reuses an existing browser session by extracting cookies from Chrome or Firefox.
-Falls back to a manually supplied cookie string.
+Authenticates using a cookie string supplied via --cookie / MOODLE_COOKIE.
+Copy the Cookie header from browser DevTools (Network tab) after logging in.
 """
 from __future__ import annotations
 
@@ -30,34 +30,6 @@ def _extract_sesskey(html: str) -> str | None:
         if m:
             return m.group(1)
     return None
-
-
-def _domain_from_url(url: str) -> str:
-    return urlparse(url).netloc
-
-
-def _load_browser_cookies(domain: str) -> dict:
-    """Try Chrome then Firefox; return a plain dict of name→value."""
-    try:
-        import browser_cookie3  # type: ignore
-    except ImportError:
-        raise RuntimeError(
-            "browser_cookie3 is not installed. Run: pip install browser-cookie3"
-        )
-
-    for loader_name in ("chrome", "firefox", "chromium", "edge"):
-        loader = getattr(browser_cookie3, loader_name, None)
-        if loader is None:
-            continue
-        try:
-            jar = loader(domain_name=domain)
-            cookies = {c.name: c.value for c in jar}
-            if cookies:
-                return cookies
-        except Exception:
-            continue
-
-    return {}
 
 
 def _parse_cookie_header(cookie_str: str) -> dict:
@@ -95,6 +67,19 @@ class MoodleSession:
         resp.raise_for_status()
         return resp
 
+    def post_json(self, path: str, payload, **kwargs) -> requests.Response:
+        """POST a JSON body (used for Moodle's internal AJAX service)."""
+        import json as _json
+        url = self.site + path if path.startswith("/") else path
+        resp = self._session.post(
+            url,
+            data=_json.dumps(payload),
+            headers={"Content-Type": "application/json"},
+            **kwargs,
+        )
+        resp.raise_for_status()
+        return resp
+
     # ------------------------------------------------------------------
     # Factory
     # ------------------------------------------------------------------
@@ -103,34 +88,20 @@ class MoodleSession:
     def create(
         cls,
         site: str,
-        cookie_str: str | None = None,
+        cookie_str: str,
     ) -> "MoodleSession":
         """
         Build an authenticated MoodleSession.
 
         Args:
             site:       Base URL of the Moodle site, e.g. https://moodle.example.edu
-            cookie_str: Raw Cookie header string (optional).
-                        If omitted, cookies are read from the running browser.
+            cookie_str: Raw Cookie header string copied from browser DevTools.
         """
         site = site.rstrip("/")
-        domain = _domain_from_url(site)
 
         s = requests.Session()
         s.headers.update({"User-Agent": "moodle-cli/0.1"})
-
-        if cookie_str:
-            cookies = _parse_cookie_header(cookie_str)
-        else:
-            cookies = _load_browser_cookies(domain)
-            if not cookies:
-                raise RuntimeError(
-                    f"No cookies found for {domain} in Chrome/Firefox.\n"
-                    "Make sure you are logged in, or pass --cookie with the "
-                    "Cookie header from browser DevTools."
-                )
-
-        s.cookies.update(cookies)
+        s.cookies.update(_parse_cookie_header(cookie_str))
 
         # Fetch the Moodle home page to grab the sesskey.
         resp = s.get(site + "/")
