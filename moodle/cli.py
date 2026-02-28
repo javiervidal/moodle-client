@@ -18,7 +18,7 @@ from rich.table import Table
 from rich import print as rprint
 
 from moodle.session import MoodleSession
-from moodle.activity import get_activity_info, set_activity_end_date
+from moodle.activity import get_activity_html, get_activity_info, get_module_raw_html, list_activities, set_activity_end_date, set_activity_html, set_activity_visibility
 from moodle.course import list_courses
 
 console = Console()
@@ -98,13 +98,90 @@ def activity():
 
 
 # ---------------------------------------------------------------------------
+# sep
+# ---------------------------------------------------------------------------
+
+@main.command("sep-aula")
+@site_option
+@cookie_option
+def sep(site, cookie):
+    """List AULA HABILITADA labels across all starred courses."""
+    with console.status("Connecting to Moodle…"):
+        try:
+            session = MoodleSession.create(site=site, cookie_str=cookie)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    with console.status("Fetching starred courses…"):
+        try:
+            courses = list_courses(session, starred=True)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    if not courses:
+        console.print("No starred courses found.")
+        return
+
+    matches = []
+    for course in courses:
+        with console.status(f"Scanning {course['fullname']}…"):
+            try:
+                activities = list_activities(session, course["id"])
+            except Exception:
+                continue
+            for a in activities:
+                if a["type"] == "label" and a["name"].upper().startswith("AULA HABILITADA"):
+                    matches.append({**a, "course_name": course["fullname"]})
+
+    if not matches:
+        console.print("No 'AULA HABILITADA' labels found in starred courses.")
+        return
+
+    table = Table(title=f"AULA HABILITADA ({len(matches)})")
+    table.add_column("CMID", style="bold cyan", no_wrap=True)
+    table.add_column("Course", style="bold")
+    table.add_column("Type")
+    table.add_column("Name")
+    table.add_column("Section", style="dim")
+    table.add_column("Visible", no_wrap=True)
+
+    for a in matches:
+        visible_str = "[green]yes[/green]" if a["visible"] else "[red]no[/red]"
+        table.add_row(
+            str(a["cmid"]),
+            a["course_name"],
+            a["type"],
+            a["name"],
+            a["section"] or "—",
+            visible_str,
+        )
+
+    console.print(table)
+    console.print()
+
+    for a in matches:
+        console.print(f"[dim]# Toggle visibility — {a['course_name']}[/dim]")
+        console.print(f"moodle activity hide --cmid {a['cmid']}")
+        console.print(f"moodle activity show --cmid {a['cmid']}")
+        console.print()
+
+
+# ---------------------------------------------------------------------------
 # course list
 # ---------------------------------------------------------------------------
 
 @course.command("list")
 @site_option
 @cookie_option
-def course_list(site, cookie):
+@click.option(
+    "--starred",
+    is_flag=True,
+    default=False,
+    help="Show only courses marked as starred (favourites).",
+)
+def course_list(site, cookie, starred):
     """List all courses you are enrolled in."""
     with console.status("Connecting to Moodle…"):
         try:
@@ -115,16 +192,17 @@ def course_list(site, cookie):
 
     with console.status("Fetching course list…"):
         try:
-            courses = list_courses(session)
+            courses = list_courses(session, starred=starred)
         except RuntimeError as e:
             console.print(f"[red]Error:[/red] {e}")
             sys.exit(1)
 
     if not courses:
-        console.print("No courses found.")
+        console.print("No starred courses found." if starred else "No courses found.")
         return
 
-    table = Table(title=f"Courses ({len(courses)})")
+    title = f"Starred courses ({len(courses)})" if starred else f"Courses ({len(courses)})"
+    table = Table(title=title)
     table.add_column("ID", style="bold cyan", no_wrap=True)
     table.add_column("Short name", style="bold")
     table.add_column("Full name")
@@ -139,6 +217,237 @@ def course_list(site, cookie):
         )
 
     console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# activity list
+# ---------------------------------------------------------------------------
+
+@activity.command("list")
+@site_option
+@cookie_option
+@click.option(
+    "--course",
+    "course_id",
+    required=True,
+    type=int,
+    help="Course ID to list activities for.",
+)
+@click.option(
+    "--section",
+    "section_name",
+    default=None,
+    help="Filter by section name (e.g. --section General).",
+)
+def activity_list(site, cookie, course_id, section_name):
+    """List all activities in a course."""
+    with console.status("Connecting to Moodle…"):
+        try:
+            session = MoodleSession.create(site=site, cookie_str=cookie)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    with console.status(f"Fetching activities for course {course_id}…"):
+        try:
+            activities = list_activities(session, course_id)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    if section_name:
+        activities = [a for a in activities if a["section"].lower() == section_name.lower()]
+
+    if not activities:
+        console.print("No activities found.")
+        return
+
+    title = f"Activities in course {course_id} — {section_name} ({len(activities)})" if section_name else f"Activities in course {course_id} ({len(activities)})"
+    table = Table(title=title)
+    table.add_column("CMID", style="bold cyan", no_wrap=True)
+    table.add_column("Type", style="bold")
+    table.add_column("Name")
+    table.add_column("Section", style="dim")
+    table.add_column("Visible", no_wrap=True)
+
+    for a in activities:
+        visible_str = "[green]yes[/green]" if a["visible"] else "[red]no[/red]"
+        table.add_row(
+            str(a["cmid"]),
+            a["type"],
+            a["name"],
+            a["section"] or "—",
+            visible_str,
+        )
+
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# activity show / hide
+# ---------------------------------------------------------------------------
+
+@activity.command("show")
+@site_option
+@cookie_option
+@cmid_option
+def activity_show(site, cookie, cmid):
+    """Make a course module visible."""
+    with console.status("Connecting to Moodle…"):
+        try:
+            session = MoodleSession.create(site=site, cookie_str=cookie)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    with console.status(f"Showing cmid={cmid}…"):
+        set_activity_visibility(session, cmid, visible=True)
+
+    console.print(f"[green]Success![/green] cmid={cmid} is now visible.")
+
+
+@activity.command("hide")
+@site_option
+@cookie_option
+@cmid_option
+def activity_hide(site, cookie, cmid):
+    """Hide a course module from students."""
+    with console.status("Connecting to Moodle…"):
+        try:
+            session = MoodleSession.create(site=site, cookie_str=cookie)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    with console.status(f"Hiding cmid={cmid}…"):
+        set_activity_visibility(session, cmid, visible=False)
+
+    console.print(f"[green]Success![/green] cmid={cmid} is now hidden.")
+
+
+# ---------------------------------------------------------------------------
+# activity debug-html
+# ---------------------------------------------------------------------------
+
+@activity.command("debug-html")
+@site_option
+@cookie_option
+@cmid_option
+@click.option("--course", "course_id", required=True, type=int, help="Course ID.")
+def activity_debug_html(site, cookie, cmid, course_id):
+    """Print the raw HTML of a module element (for debugging visibility detection)."""
+    with console.status("Connecting to Moodle…"):
+        try:
+            session = MoodleSession.create(site=site, cookie_str=cookie)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    with console.status(f"Fetching module HTML for cmid={cmid}…"):
+        try:
+            html = get_module_raw_html(session, course_id, cmid)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    console.print(html)
+
+
+# ---------------------------------------------------------------------------
+# activity html
+# ---------------------------------------------------------------------------
+
+@activity.command("html")
+@site_option
+@cookie_option
+@cmid_option
+def activity_html(site, cookie, cmid):
+    """Print the raw HTML content of a label/text activity."""
+    with console.status("Connecting to Moodle…"):
+        try:
+            session = MoodleSession.create(site=site, cookie_str=cookie)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    with console.status(f"Fetching HTML for cmid={cmid}…"):
+        try:
+            html = get_activity_html(session, cmid)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    console.print(html)
+
+
+# ---------------------------------------------------------------------------
+# activity set-html
+# ---------------------------------------------------------------------------
+
+@activity.command("set-html")
+@site_option
+@cookie_option
+@cmid_option
+@click.option(
+    "--html",
+    "html_str",
+    default=None,
+    help="New HTML content as a string.",
+)
+@click.option(
+    "--file",
+    "html_file",
+    default=None,
+    type=click.Path(exists=True, readable=True),
+    help="Path to a file containing the new HTML content.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Show what would be sent without actually submitting.",
+)
+def activity_set_html(site, cookie, cmid, html_str, html_file, dry_run):
+    """Replace the HTML content of a label/text activity."""
+    if not html_str and not html_file:
+        console.print("[red]Error:[/red] Provide --html or --file.")
+        sys.exit(1)
+
+    if html_file:
+        with open(html_file) as f:
+            new_html = f.read()
+    else:
+        new_html = html_str
+
+    with console.status("Connecting to Moodle…"):
+        try:
+            session = MoodleSession.create(site=site, cookie_str=cookie)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    label = "[yellow]DRY RUN[/yellow] — " if dry_run else ""
+    with console.status(f"{label}Updating HTML for cmid={cmid}…"):
+        try:
+            result = set_activity_html(session, cmid, new_html, dry_run=dry_run)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    if dry_run:
+        console.print(f"[yellow]DRY RUN[/yellow] — would update HTML content for cmid={cmid}.")
+        console.print("No changes were made.")
+        return
+
+    if result["success"]:
+        console.print(f"[green]Success![/green] HTML content updated for cmid={cmid}.")
+    else:
+        console.print(
+            f"[red]Warning:[/red] Form submitted but Moodle did not redirect as expected. "
+            f"Final URL: {result.get('final_url')}\n"
+            "The change may not have been applied. Check Moodle directly."
+        )
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------

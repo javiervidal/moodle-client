@@ -63,6 +63,12 @@ Add both lines to your `~/.zshrc` (or `~/.bashrc`) to persist them across termin
 moodle course list
 ```
 
+### List only starred courses
+
+```bash
+moodle course list --starred
+```
+
 ### Show current settings for an activity
 
 ```bash
@@ -87,6 +93,7 @@ moodle activity set-end --cmid 42 --date "2026-06-30 23:59" --dry-run
 moodle course list
   --site, -s    Base URL of the Moodle site  [env: MOODLE_SITE]
   --cookie, -c  Raw Cookie header string  [env: MOODLE_COOKIE]
+  --starred     Show only courses marked as starred (favourites)
 
 moodle activity info
   --site, -s    Base URL of the Moodle site  [env: MOODLE_SITE]
@@ -103,12 +110,38 @@ moodle activity set-end
 
 ### Accepted date formats
 
-| Format | Example |
-|---|---|
-| `YYYY-MM-DD HH:MM` | `2026-06-30 23:59` |
-| `YYYY-MM-DD` | `2026-06-30` (time defaults to 00:00) |
-| `DD/MM/YYYY HH:MM` | `30/06/2026 23:59` |
-| `DD/MM/YYYY` | `30/06/2026` |
+| Format             | Example                               |
+| ------------------ | ------------------------------------- |
+| `YYYY-MM-DD HH:MM` | `2026-06-30 23:59`                    |
+| `YYYY-MM-DD`       | `2026-06-30` (time defaults to 00:00) |
+| `DD/MM/YYYY HH:MM` | `30/06/2026 23:59`                    |
+| `DD/MM/YYYY`       | `30/06/2026`                          |
+
+---
+
+## September configuration
+
+Commands for configuring courses for the September exam period. All commands operate on your starred courses.
+
+### sep-aula
+
+Lists all label modules named `AULA HABILITADA` across starred courses, showing their current visibility, and prints ready-to-run hide/show commands for each one.
+
+```bash
+moodle sep-aula
+```
+
+### sep-fora
+
+*(coming soon)*
+
+### sep-activities
+
+*(coming soon)*
+
+### sep-forum
+
+*(coming soon)*
 
 ---
 
@@ -148,11 +181,11 @@ moodle-client/
 
 End-date field detection covers:
 
-| Field | Activity types |
-|---|---|
-| `timeclose` | Quiz, Choice, Feedback, Lesson |
-| `duedate` / `cutoffdate` | Assignment |
-| `timeend` | Generic fallback |
+| Field                    | Activity types                 |
+| ------------------------ | ------------------------------ |
+| `timeclose`              | Quiz, Choice, Feedback, Lesson |
+| `duedate` / `cutoffdate` | Assignment                     |
+| `timeend`                | Generic fallback               |
 
 ---
 

@@ -14,6 +14,94 @@ from bs4 import BeautifulSoup
 from .session import MoodleSession
 
 
+def list_activities(session: MoodleSession, course_id: int) -> list[dict[str, Any]]:
+    """
+    Scrape /course/view.php?id=<course_id> and return all course modules,
+    including labels/HTML blocks which have no link of their own.
+
+    Each dict has: cmid, name, type, section, visible.
+    """
+    resp = session.get(f"/course/view.php?id={course_id}")
+    soup = BeautifulSoup(resp.text, "lxml")
+
+    activities: list[dict[str, Any]] = []
+    mod_link_re = re.compile(r"/mod/[^/]+/view\.php\?id=\d+")
+
+    for section_el in soup.find_all("li", id=re.compile(r"^section-")):
+        heading = section_el.find(["h3", "h4"], class_=re.compile(r"sectionname|section-title"))
+        section_title = heading.get_text(strip=True) if heading else section_el.get("aria-label", "")
+
+        for mod_el in section_el.find_all("li", id=re.compile(r"^module-")):
+            # cmid from the li id="module-<cmid>"
+            m = re.match(r"module-(\d+)", mod_el.get("id", ""))
+            if not m:
+                continue
+            cmid = int(m.group(1))
+
+            # type from class="activity <modname> modtype_<modname> ..."
+            classes = mod_el.get("class", [])
+            mod_type = next(
+                (cls[len("modtype_"):] for cls in classes if cls.startswith("modtype_")),
+                "unknown",
+            )
+
+            # Visibility: Moodle 4.x adds "hiddenactivity" to the inner
+            # div.activity-item when the module is hidden from students.
+            activity_item = mod_el.find("div", class_="activity-item")
+            if activity_item:
+                item_classes = activity_item.get("class", [])
+                visible = "hiddenactivity" not in item_classes
+            else:
+                visible = "dimmed" not in classes
+
+            # name: labels display HTML inline with no link; others have a link
+            if mod_type == "label":
+                content = mod_el.find("div", class_=re.compile(r"no-overflow|contentafterlink"))
+                if content:
+                    text = content.get_text(strip=True)
+                    name = (text[:60] + "…") if len(text) > 60 else text or "(empty label)"
+                else:
+                    name = "(label)"
+            else:
+                a = mod_el.find("a", href=mod_link_re)
+                if a:
+                    name_span = a.find("span", class_="instancename")
+                    if name_span:
+                        for hidden in name_span.find_all("span", class_="accesshide"):
+                            hidden.decompose()
+                        name = name_span.get_text(strip=True)
+                    else:
+                        name = a.get_text(strip=True)
+                else:
+                    name = mod_el.get_text(strip=True)[:60]
+
+            activities.append({
+                "cmid": cmid,
+                "name": name,
+                "type": mod_type,
+                "section": section_title,
+                "visible": visible,
+            })
+
+    return activities
+
+
+def get_module_raw_html(session: MoodleSession, course_id: int, cmid: int) -> str:
+    """Return the raw HTML of the li#module-<cmid> element for debugging."""
+    resp = session.get(f"/course/view.php?id={course_id}")
+    soup = BeautifulSoup(resp.text, "lxml")
+    el = soup.find("li", id=f"module-{cmid}")
+    if el is None:
+        raise RuntimeError(f"module-{cmid} not found in course {course_id}")
+    return el.prettify()
+
+
+def set_activity_visibility(session: MoodleSession, cmid: int, visible: bool) -> None:
+    """Show or hide a course module via /course/mod.php."""
+    action = "show" if visible else "hide"
+    session.get(f"/course/mod.php?sesskey={session.sesskey}&sr=0&{action}={cmid}")
+
+
 # Date field name suffixes that Moodle uses for timestamp selectors.
 # The full field name is e.g. "timeclose[day]", "timeclose[month]", …
 _DATE_PARTS = ("day", "month", "year", "hour", "minute")
@@ -94,6 +182,54 @@ def _detect_end_date_field(fields: dict) -> str | None:
         if key in fields:
             return candidate
     return None
+
+
+def get_activity_html(session: MoodleSession, cmid: int) -> str:
+    """
+    Return the raw HTML content of a label/text activity (introeditor[text]).
+    """
+    resp = session.get(f"/course/modedit.php?update={cmid}&return=0&sr=0")
+    fields, _ = _parse_form(resp.text)
+    html = fields.get("introeditor[text]")
+    if html is None:
+        raise RuntimeError(
+            f"No HTML content field found for cmid={cmid}. "
+            "Is this a label or text activity?"
+        )
+    return html
+
+
+def set_activity_html(
+    session: MoodleSession,
+    cmid: int,
+    new_html: str,
+    dry_run: bool = False,
+) -> dict:
+    """
+    Replace the HTML content (introeditor[text]) of a label/text activity.
+    """
+    resp = session.get(f"/course/modedit.php?update={cmid}&return=0&sr=0")
+    fields, action = _parse_form(resp.text)
+
+    if "introeditor[text]" not in fields:
+        raise RuntimeError(
+            f"No HTML content field found for cmid={cmid}. "
+            "Is this a label or text activity?"
+        )
+
+    fields["introeditor[text]"] = new_html
+    fields["sesskey"] = session.sesskey
+
+    if dry_run:
+        return {"success": None, "cmid": cmid, "dry_run": True, "_fields": fields}
+
+    if not action.startswith("http"):
+        action = session.site + "/" + action.lstrip("/")
+
+    post_resp = session.post(action, data=fields)
+    success = "modedit.php" not in post_resp.url
+
+    return {"success": success, "cmid": cmid, "dry_run": False, "final_url": post_resp.url}
 
 
 def get_activity_info(session: MoodleSession, cmid: int) -> dict:

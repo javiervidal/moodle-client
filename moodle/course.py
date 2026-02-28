@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 from .session import MoodleSession
 
 
-def _ajax_list_courses(session: MoodleSession) -> list[dict[str, Any]]:
+def _ajax_list_courses(session: MoodleSession, starred: bool = False) -> list[dict[str, Any]]:
     """
     Call core_course_get_enrolled_courses_by_timeline_classification via
     Moodle's internal service endpoint.
@@ -23,6 +23,7 @@ def _ajax_list_courses(session: MoodleSession) -> list[dict[str, Any]]:
     Returns a list of course dicts with at minimum:
       id, fullname, shortname, category (name string)
     """
+    classification = "favourites" if starred else "all"
     payload = [
         {
             "index": 0,
@@ -30,7 +31,7 @@ def _ajax_list_courses(session: MoodleSession) -> list[dict[str, Any]]:
             "args": {
                 "offset": 0,
                 "limit": 0,
-                "classification": "all",
+                "classification": classification,
                 "sort": "fullname",
                 "customfieldname": "",
                 "customfieldvalue": "",
@@ -109,14 +110,16 @@ def _scrape_list_courses(session: MoodleSession) -> list[dict[str, Any]]:
     return courses
 
 
-def list_courses(session: MoodleSession) -> list[dict[str, Any]]:
+def list_courses(session: MoodleSession, starred: bool = False) -> list[dict[str, Any]]:
     """
     Return all courses the current user is enrolled in (or can access).
 
     Tries the AJAX endpoint first; falls back to HTML scraping.
     Each dict has: id, fullname, shortname, category, visible.
+    If starred=True, only returns courses marked as favourites.
+    The scrape fallback does not support starred filtering.
     """
     try:
-        return _ajax_list_courses(session)
+        return _ajax_list_courses(session, starred=starred)
     except Exception:
         return _scrape_list_courses(session)
