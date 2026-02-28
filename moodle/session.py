@@ -104,8 +104,14 @@ class MoodleSession:
         s.cookies.update(_parse_cookie_header(cookie_str))
 
         # Fetch the Moodle home page to grab the sesskey.
-        resp = s.get(site + "/")
-        resp.raise_for_status()
+        try:
+            resp = s.get(site + "/")
+            resp.raise_for_status()
+        except requests.exceptions.TooManyRedirects:
+            raise RuntimeError(
+                "Session cookie has expired. Copy a fresh MoodleSession cookie "
+                "from browser DevTools and update MOODLE_COOKIE."
+            )
 
         sesskey = _extract_sesskey(resp.text)
         if not sesskey:
