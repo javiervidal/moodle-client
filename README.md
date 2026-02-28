@@ -131,15 +131,15 @@ Lists all label modules named `AULA HABILITADA` across starred courses, showing 
 moodle sep-aula
 ```
 
-### sep-fora
+### sep-forum
 
-*(coming soon)*
+Lists all forums (excluding announcements) across starred courses with their visibility and cutoff date, and prints ready-to-run hide/show/set-date commands grouped by course.
+
+```bash
+moodle sep-forum
+```
 
 ### sep-activities
-
-*(coming soon)*
-
-### sep-forum
 
 *(coming soon)*
 

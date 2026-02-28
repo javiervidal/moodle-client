@@ -98,7 +98,7 @@ def activity():
 
 
 # ---------------------------------------------------------------------------
-# sep
+# sep-aula / sep-fora
 # ---------------------------------------------------------------------------
 
 @main.command("sep-aula")
@@ -165,6 +165,86 @@ def sep(site, cookie):
         console.print(f"[dim]# Toggle visibility — {a['course_name']}[/dim]")
         console.print(f"moodle activity hide --cmid {a['cmid']}")
         console.print(f"moodle activity show --cmid {a['cmid']}")
+        console.print()
+
+
+@main.command("sep-forum")
+@site_option
+@cookie_option
+def sep_fora(site, cookie):
+    """List all forums across starred courses with their limit date."""
+    with console.status("Connecting to Moodle…"):
+        try:
+            session = MoodleSession.create(site=site, cookie_str=cookie)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    with console.status("Fetching starred courses…"):
+        try:
+            courses = list_courses(session, starred=True)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    if not courses:
+        console.print("No starred courses found.")
+        return
+
+    forums = []
+    for course in courses:
+        with console.status(f"Scanning {course['fullname']}…"):
+            try:
+                activities = list_activities(session, course["id"])
+            except Exception:
+                continue
+            for a in activities:
+                if a["type"] == "forum" and "anuncios" not in a["name"].lower():
+                    forums.append({**a, "course_name": course["fullname"]})
+
+    if not forums:
+        console.print("No forums found in starred courses.")
+        return
+
+    for f in forums:
+        with console.status(f"Fetching dates for {f['name']}…"):
+            try:
+                info = get_activity_info(session, f["cmid"])
+                end = info["end_date"]
+                f["limit_date"] = end.strftime("%Y-%m-%d %H:%M") if end else "—"
+            except Exception:
+                f["limit_date"] = "—"
+
+    table = Table(title=f"Forums ({len(forums)})")
+    table.add_column("CMID", style="bold cyan", no_wrap=True)
+    table.add_column("Course", style="bold")
+    table.add_column("Name")
+    table.add_column("Visible", no_wrap=True)
+    table.add_column("Limit date", no_wrap=True)
+
+    for f in forums:
+        visible_str = "[green]yes[/green]" if f["visible"] else "[red]no[/red]"
+        table.add_row(
+            str(f["cmid"]),
+            f["course_name"],
+            f["name"],
+            visible_str,
+            f["limit_date"],
+        )
+
+    console.print(table)
+    console.print()
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    current_course = None
+    for f in forums:
+        if f["course_name"] != current_course:
+            current_course = f["course_name"]
+            console.print(f"[bold]# {current_course}[/bold]")
+        console.print(f"[dim]# {f['name']}[/dim]")
+        console.print(f"moodle activity hide --cmid {f['cmid']}")
+        console.print(f"moodle activity show --cmid {f['cmid']}")
+        console.print(f'moodle activity set-end --cmid {f["cmid"]} --field cutoffdate --date "{now_str}"')
         console.print()
 
 
@@ -239,7 +319,13 @@ def course_list(site, cookie, starred):
     default=None,
     help="Filter by section name (e.g. --section General).",
 )
-def activity_list(site, cookie, course_id, section_name):
+@click.option(
+    "--type",
+    "mod_type",
+    default=None,
+    help="Filter by module type (e.g. --type forum).",
+)
+def activity_list(site, cookie, course_id, section_name, mod_type):
     """List all activities in a course."""
     with console.status("Connecting to Moodle…"):
         try:
@@ -257,6 +343,8 @@ def activity_list(site, cookie, course_id, section_name):
 
     if section_name:
         activities = [a for a in activities if a["section"].lower() == section_name.lower()]
+    if mod_type:
+        activities = [a for a in activities if a["type"].lower() == mod_type.lower()]
 
     if not activities:
         console.print("No activities found.")
@@ -505,12 +593,17 @@ def activity_info(site, cookie, cmid):
     help='New end date/time, e.g. "2026-06-30 23:59".',
 )
 @click.option(
+    "--field",
+    default=None,
+    help='Date field to set (e.g. cutoffdate, duedate). Auto-detected if not given.',
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     default=False,
     help="Parse and show what would be sent without actually submitting.",
 )
-def activity_set_end(site, cookie, cmid, date_str, dry_run):
+def activity_set_end(site, cookie, cmid, date_str, field, dry_run):
     """Change the end date of an activity."""
     try:
         new_date = parse_date(date_str)
@@ -529,7 +622,7 @@ def activity_set_end(site, cookie, cmid, date_str, dry_run):
     with console.status(f"{label}Updating cmid={cmid}…"):
         try:
             result = set_activity_end_date(
-                session, cmid, new_date, dry_run=dry_run
+                session, cmid, new_date, dry_run=dry_run, field=field
             )
         except RuntimeError as e:
             console.print(f"[red]Error:[/red] {e}")

@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from typing import Any
+from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
@@ -148,12 +149,20 @@ def _parse_form(html: str) -> tuple[dict[str, Any], str]:
 
         if tag.name == "select":
             selected = tag.find("option", selected=True)
+            if selected is None and name.endswith("[]"):
+                # Empty multiselect — browsers omit these entirely.
+                continue
             fields[name] = selected["value"] if selected else ""
         elif tag.name == "textarea":
             fields[name] = tag.get_text()
         else:
             tag_type = tag.get("type", "text").lower()
-            if tag_type in ("checkbox", "radio"):
+            if tag_type == "submit":
+                # Only keep the primary save button; skip cancel and secondary submits.
+                if name == "cancel":
+                    continue
+                fields.setdefault(name, tag.get("value", ""))
+            elif tag_type in ("checkbox", "radio"):
                 if tag.has_attr("checked"):
                     fields[name] = tag.get("value", "1")
                 else:
@@ -175,12 +184,19 @@ def _set_date_fields(fields: dict, base_name: str, dt: datetime) -> None:
     fields[f"{base_name}[enabled]"] = "1"
 
 
-def _detect_end_date_field(fields: dict) -> str | None:
-    """Return the base name of the end-date field found in `fields`."""
+def _detect_end_date_field(fields: dict, include_disabled: bool = False) -> str | None:
+    """Return the base name of the end-date field found in `fields`.
+
+    When include_disabled=False (default), skips fields whose enabled checkbox
+    is unchecked — used for reading the current value.
+    When include_disabled=True, returns the field regardless — used for writing.
+    """
     for candidate in _END_DATE_FIELD_CANDIDATES:
-        key = f"{candidate}[day]"
-        if key in fields:
-            return candidate
+        if f"{candidate}[day]" not in fields:
+            continue
+        if not include_disabled and fields.get(f"{candidate}[enabled]") == "0":
+            continue
+        return candidate
     return None
 
 
@@ -224,7 +240,7 @@ def set_activity_html(
         return {"success": None, "cmid": cmid, "dry_run": True, "_fields": fields}
 
     if not action.startswith("http"):
-        action = session.site + "/" + action.lstrip("/")
+        action = urljoin(session.site + "/course/modedit.php", action)
 
     post_resp = session.post(action, data=fields)
     success = "modedit.php" not in post_resp.url
@@ -273,9 +289,13 @@ def set_activity_end_date(
     cmid: int,
     new_end_date: datetime,
     dry_run: bool = False,
+    field: str | None = None,
 ) -> dict:
     """
     Change the end date of a course module.
+
+    If `field` is given (e.g. "cutoffdate", "duedate"), that field is used
+    directly. Otherwise the first supported field found in the form is used.
 
     Returns a result dict with keys:
       - success (bool)
@@ -287,7 +307,15 @@ def set_activity_end_date(
     resp = session.get(f"/course/modedit.php?update={cmid}&return=0&sr=0")
     fields, action = _parse_form(resp.text)
 
-    end_field = _detect_end_date_field(fields)
+    if field:
+        if f"{field}[day]" not in fields:
+            raise RuntimeError(
+                f"Field '{field}' not found in the form for cmid={cmid}. "
+                f"Available date fields: {[k.split('[')[0] for k in fields if '[day]' in k]}"
+            )
+        end_field = field
+    else:
+        end_field = _detect_end_date_field(fields, include_disabled=True)
     if end_field is None:
         raise RuntimeError(
             f"No supported end-date field found for cmid={cmid}. "
@@ -312,7 +340,7 @@ def set_activity_end_date(
 
     # Resolve absolute POST URL.
     if not action.startswith("http"):
-        action = session.site + "/" + action.lstrip("/")
+        action = urljoin(session.site + "/course/modedit.php", action)
 
     post_resp = session.post(action, data=fields)
 
