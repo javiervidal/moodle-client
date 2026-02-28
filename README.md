@@ -2,7 +2,7 @@
 
 A command-line client for automating repetitive Moodle administration tasks.
 
-No API key required — it reuses your existing browser session.
+No API key required — it authenticates using a cookie copied from your browser.
 
 ---
 
@@ -10,7 +10,7 @@ No API key required — it reuses your existing browser session.
 
 Moodle's web interface is a set of HTML forms protected by a CSRF token (`sesskey`). This tool:
 
-1. Uses your session cookie to authenticate (copied once from browser DevTools)
+1. Authenticates using a cookie copied from your browser DevTools
 2. Scrapes the `sesskey` from the Moodle home page
 3. Fetches and submits Moodle forms — exactly what your browser does, but from the terminal
 
@@ -19,7 +19,7 @@ Moodle's web interface is a set of HTML forms protected by a CSRF token (`sesske
 ## Requirements
 
 - Python 3.10+
-- An active Moodle session in your browser
+- A Moodle account with editing rights
 - `pip`
 
 ---
