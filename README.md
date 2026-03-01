@@ -69,6 +69,20 @@ moodle course list
 moodle course list --starred
 ```
 
+### List all activities in a course
+
+```bash
+moodle activity list --course 123
+```
+
+Filter by type or section:
+
+```bash
+moodle activity list --course 123 --type quiz
+moodle activity list --course 123 --type assign
+moodle activity list --course 123 --section "General"
+```
+
 ### Show current settings for an activity
 
 ```bash
