@@ -139,31 +139,39 @@ Commands for configuring courses for the September exam period. All commands ope
 
 ### sep-aula
 
-Lists all label modules named `AULA HABILITADA` across starred courses, showing their current visibility, and prints ready-to-run hide/show commands for each one.
+Lists `AULA HABILITADA` labels across starred courses. SEP status: green `✓` if visible, red `✗` if hidden. Prints `activity show` commands for hidden labels.
 
 ```bash
 moodle sep-aula
 ```
 
-### sep-forum
+### sep-fora
 
-Lists all forums (excluding announcements) across starred courses with their visibility and cutoff date, and prints ready-to-run hide/show/set-date commands grouped by course.
+Lists all forums (excluding announcements) across starred courses with their limit date and SEP status. For regular forums: green `✓` if the limit date is in the past, red `✗` otherwise. For "septiembre" forums: green `✓` if no limit date is set, red `✗` otherwise. Prints commands only for red `✗` entries.
 
 ```bash
-moodle sep-forum
+moodle sep-fora
 ```
 
 ### sep-activities
 
-Lists all assignments (excluding exams) across starred courses with their due date, cutoff date, and a SEP status column (green `✓` if duedate is last Sunday of August at 23:59 and cutoffdate is disabled, red `✗` otherwise). Prints ready-to-run `activity sep` commands for unconfigured assignments.
+Lists all assignments (excluding exams) across starred courses with their dates and SEP status. Green `✓` if duedate is last Sunday of August at 23:59 and cutoffdate is disabled. Prints `activity sep` commands for unconfigured assignments.
 
 ```bash
 moodle sep-activities
 ```
 
+### sep-quizzes
+
+Lists all quizzes (excluding exams) across starred courses with their close date and SEP status. Green `✓` if timeclose is last Sunday of August at 23:59. Prints `activity sep` commands for unconfigured quizzes.
+
+```bash
+moodle sep-quizzes
+```
+
 ### activity sep
 
-Disables cutoffdate and sets duedate to the last Sunday of August at 23:59 in a single form submission. Optionally accepts `--date` to override the default date.
+Configures an activity for the September exam period. For assignments: disables cutoffdate and sets duedate. For quizzes: sets timeclose. Defaults to last Sunday of August at 23:59. Optionally accepts `--date` to override.
 
 ```bash
 moodle activity sep --cmid 42

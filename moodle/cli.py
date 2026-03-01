@@ -142,33 +142,33 @@ def sep(site, cookie):
     table = Table(title=f"AULA HABILITADA ({len(matches)})")
     table.add_column("CMID", style="bold cyan", no_wrap=True)
     table.add_column("Course", style="bold")
-    table.add_column("Type")
     table.add_column("Name")
-    table.add_column("Section", style="dim")
-    table.add_column("Visible", no_wrap=True)
+    table.add_column("SEP", no_wrap=True)
 
     for a in matches:
-        visible_str = "[green]yes[/green]" if a["visible"] else "[red]no[/red]"
+        sep_str = "[green]✓[/green]" if a["visible"] else "[red]✗[/red]"
         table.add_row(
             str(a["cmid"]),
             a["course_name"],
-            a["type"],
             a["name"],
-            a["section"] or "—",
-            visible_str,
+            sep_str,
         )
 
     console.print(table)
     console.print()
 
-    for a in matches:
-        console.print(f"[dim]# Toggle visibility — {a['course_name']}[/dim]")
-        console.print(f"moodle activity hide --cmid {a['cmid']}")
+    hidden = [a for a in matches if not a["visible"]]
+    if not hidden:
+        console.print("[green]All labels are visible.[/green]")
+        return
+
+    for a in hidden:
+        console.print(f"[dim]# {a['course_name']}[/dim]")
         console.print(f"moodle activity show --cmid {a['cmid']}")
         console.print()
 
 
-@main.command("sep-forum")
+@main.command("sep-fora")
 @site_option
 @cookie_option
 def sep_fora(site, cookie):
@@ -206,13 +206,16 @@ def sep_fora(site, cookie):
         console.print("No forums found in starred courses.")
         return
 
+    now = datetime.now()
+
     for f in forums:
         with console.status(f"Fetching dates for {f['name']}…"):
             try:
                 info = get_activity_info(session, f["cmid"])
-                end = info["end_date"]
-                f["limit_date"] = end.strftime("%Y-%m-%d %H:%M") if end else "—"
+                f["_end_date"] = info["end_date"]
+                f["limit_date"] = info["end_date"].strftime("%Y-%m-%d %H:%M") if info["end_date"] else "—"
             except Exception:
+                f["_end_date"] = None
                 f["limit_date"] = "—"
 
     table = Table(title=f"Forums ({len(forums)})")
@@ -221,30 +224,47 @@ def sep_fora(site, cookie):
     table.add_column("Name")
     table.add_column("Visible", no_wrap=True)
     table.add_column("Limit date", no_wrap=True)
+    table.add_column("SEP", no_wrap=True)
+
+    def _is_sep_ok(f):
+        is_sept = "septiembre" in f["name"].lower()
+        if is_sept:
+            return f["_end_date"] is None
+        else:
+            return f["_end_date"] is not None and f["_end_date"] < now
 
     for f in forums:
         visible_str = "[green]yes[/green]" if f["visible"] else "[red]no[/red]"
+        sep_str = "[green]✓[/green]" if _is_sep_ok(f) else "[red]✗[/red]"
         table.add_row(
             str(f["cmid"]),
             f["course_name"],
             f["name"],
             visible_str,
             f["limit_date"],
+            sep_str,
         )
 
     console.print(table)
     console.print()
 
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    pending = [f for f in forums if not _is_sep_ok(f)]
+    if not pending:
+        console.print("[green]All forums are correctly configured.[/green]")
+        return
+
+    now_str = now.strftime("%Y-%m-%d %H:%M")
     current_course = None
-    for f in forums:
+    for f in pending:
         if f["course_name"] != current_course:
             current_course = f["course_name"]
             console.print(f"[bold]# {current_course}[/bold]")
+        is_sept = "septiembre" in f["name"].lower()
         console.print(f"[dim]# {f['name']}[/dim]")
-        console.print(f"moodle activity hide --cmid {f['cmid']}")
-        console.print(f"moodle activity show --cmid {f['cmid']}")
-        console.print(f'moodle activity set-end --cmid {f["cmid"]} --field cutoffdate --date "{now_str}"')
+        if is_sept:
+            console.print(f"moodle activity show --cmid {f['cmid']}")
+        else:
+            console.print(f'moodle activity set-end --cmid {f["cmid"]} --field cutoffdate --date "{now_str}"')
         console.print()
 
 
@@ -366,6 +386,114 @@ def sep_activities(site, cookie):
             console.print(f"[bold]# {current_course}[/bold]")
         console.print(f"[dim]# {a['name']}[/dim]")
         console.print(f'moodle activity sep --cmid {a["cmid"]}')
+        console.print()
+
+
+# ---------------------------------------------------------------------------
+# sep-quizzes
+# ---------------------------------------------------------------------------
+
+@main.command("sep-quizzes")
+@site_option
+@cookie_option
+def sep_quizzes(site, cookie):
+    """List all quizzes across starred courses with their close date."""
+    with console.status("Connecting to Moodle…"):
+        try:
+            session = MoodleSession.create(site=site, cookie_str=cookie)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    with console.status("Fetching starred courses…"):
+        try:
+            courses = list_courses(session, starred=True)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    if not courses:
+        console.print("No starred courses found.")
+        return
+
+    quizzes = []
+    for course in courses:
+        with console.status(f"Scanning {course['fullname']}…"):
+            try:
+                activities = list_activities(session, course["id"])
+            except Exception:
+                continue
+            for a in activities:
+                if a["type"] == "quiz" and "examen" not in a["name"].lower():
+                    quizzes.append({**a, "course_name": course["fullname"]})
+
+    if not quizzes:
+        console.print("No quizzes found in starred courses.")
+        return
+
+    year = datetime.now().year
+    last_sunday = max(
+        d for d in (datetime(year, 8, day) for day in range(25, 32))
+        if d.weekday() == 6  # Sunday
+    )
+    target = last_sunday.replace(hour=23, minute=59)
+
+    for q in quizzes:
+        with console.status(f"Fetching dates for {q['name']}…"):
+            try:
+                dates = get_activity_dates(session, q["cmid"], ["timeclose"])
+                q["_timeclose"] = dates["timeclose"]
+                q["timeclose"] = dates["timeclose"].strftime("%Y-%m-%d %H:%M") if dates["timeclose"] else "—"
+            except Exception:
+                q["_timeclose"] = None
+                q["timeclose"] = "—"
+
+    table = Table(title=f"Quizzes ({len(quizzes)})")
+    table.add_column("CMID", style="bold cyan", no_wrap=True)
+    table.add_column("Course", style="bold")
+    table.add_column("Name")
+    table.add_column("Visible", no_wrap=True)
+    table.add_column("Close date", no_wrap=True)
+    table.add_column("SEP", no_wrap=True)
+
+    def _is_ok(q):
+        tc = q["_timeclose"]
+        return (
+            tc is not None
+            and tc.year == target.year
+            and tc.month == target.month
+            and tc.day == target.day
+            and tc.hour == target.hour
+            and tc.minute == target.minute
+        )
+
+    for q in quizzes:
+        visible_str = "[green]yes[/green]" if q["visible"] else "[red]no[/red]"
+        sep_str = "[green]✓[/green]" if _is_ok(q) else "[red]✗[/red]"
+        table.add_row(
+            str(q["cmid"]),
+            q["course_name"],
+            q["name"],
+            visible_str,
+            q["timeclose"],
+            sep_str,
+        )
+
+    console.print(table)
+    console.print()
+
+    pending = [q for q in quizzes if not _is_ok(q)]
+    if not pending:
+        console.print("[green]All quizzes are correctly configured.[/green]")
+        return
+
+    current_course = None
+    for q in pending:
+        if q["course_name"] != current_course:
+            current_course = q["course_name"]
+            console.print(f"[bold]# {current_course}[/bold]")
+        console.print(f"[dim]# {q['name']}[/dim]")
+        console.print(f'moodle activity sep --cmid {q["cmid"]}')
         console.print()
 
 
@@ -859,7 +987,7 @@ def activity_sep(site, cookie, cmid, date_str):
     if result["success"]:
         console.print(
             f"[green]Success![/green] cmid={cmid}: "
-            f"cutoffdate disabled, duedate set to [bold]{new_date.strftime('%Y-%m-%d %H:%M')}[/bold]."
+            f"end date set to [bold]{new_date.strftime('%Y-%m-%d %H:%M')}[/bold]."
         )
     else:
         console.print(

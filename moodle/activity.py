@@ -149,6 +149,9 @@ def _parse_form(html: str) -> tuple[dict[str, Any], str]:
         # Browsers never submit disabled form controls.
         if tag.has_attr("disabled"):
             continue
+        # Skip fields inside containers hidden by JS (hidden="hidden").
+        if tag.find_parent(attrs={"hidden": "hidden"}):
+            continue
 
         if tag.name == "select":
             selected = tag.find("option", selected=True)
@@ -165,7 +168,12 @@ def _parse_form(html: str) -> tuple[dict[str, Any], str]:
                 if name == "cancel":
                     continue
                 fields.setdefault(name, tag.get("value", ""))
-            elif tag_type in ("checkbox", "radio"):
+            elif tag_type == "checkbox":
+                # Browsers only submit checked checkboxes.
+                if tag.has_attr("checked"):
+                    fields[name] = tag.get("value", "1")
+                # else: omit entirely (browser behaviour)
+            elif tag_type == "radio":
                 if tag.has_attr("checked"):
                     fields[name] = tag.get("value", "1")
                 else:
@@ -194,27 +202,59 @@ def _prepare_for_submission(fields: dict) -> None:
     4. Keep only one submit button (submitbutton2) — browsers only send the
        clicked button.
     """
-    # 1. Remove disabled date-selector groups.
+    # 1. Remove disabled field groups (dates and durations).
+    #    A group is disabled when its [enabled] checkbox is "0" or absent
+    #    (unchecked checkboxes are omitted by browsers).
+    #    Collect all base names that have date/duration parts.
     date_bases = {
         k.rsplit("[", 1)[0]
         for k in fields
-        if k.endswith("[enabled]") and fields[k] == "0"
+        if k.endswith("[day]")
     }
-    for base in date_bases:
+    duration_bases = {
+        k.rsplit("[", 1)[0]
+        for k in fields
+        if k.endswith("[timeunit]")
+    }
+    all_group_bases = date_bases | duration_bases
+    for base in all_group_bases:
+        enabled = fields.get(f"{base}[enabled]")
+        if enabled == "1":
+            continue  # Group is enabled — keep it.
+        # Remove all parts of the disabled group.
         for part in ("day", "month", "year", "hour", "minute", "enabled", "calendar"):
+            fields.pop(f"{base}[{part}]", None)
+        for part in ("number", "timeunit", "enabled"):
             fields.pop(f"{base}[{part}]", None)
 
     # 2. Fix empty availabilityconditionsjson.
     if "availabilityconditionsjson" in fields and not fields["availabilityconditionsjson"]:
         fields["availabilityconditionsjson"] = '{"op":"&","c":[],"showc":[]}'
 
-    # 3. Remove plugin-injected "action" field.
-    fields.pop("action", None)
+    # 3. Remove SEB detail fields when SEB is disabled — Moodle's JS hides
+    #    these and the browser never submits them.
+    if fields.get("seb_requiresafeexambrowser") == "0":
+        seb_detail_keys = [
+            k for k in fields
+            if k.startswith("seb_") and k != "seb_requiresafeexambrowser"
+        ]
+        for k in seb_detail_keys:
+            fields.pop(k)
+        fields.pop("filemanager_sebconfigfile", None)
 
-    # 4. Keep only the "save and return" button.
+    # 4. Remove fields that Moodle's JS strips or that only exist in the
+    #    HTML but are never submitted by browsers (e.g. button values).
+    fields.pop("action", None)
+    fields.pop("boundary_add_fields", None)
+
+    # 5. Remove groupingid when groupmode is 0 (Moodle JS hides it).
+    if fields.get("groupmode") == "0":
+        fields.pop("groupingid", None)
+
+    # 6. Keep only the "save and return" button.
     fields.pop("submitbutton", None)
 
-    # 5. Remove the unlock-completion button (not a real submit action).
+    # 7. Remove the unlock-completion button (not a real submit action).
     fields.pop("unlockcompletion", None)
 
 
@@ -239,7 +279,7 @@ def _detect_end_date_field(fields: dict, include_disabled: bool = False) -> str 
     for candidate in _END_DATE_FIELD_CANDIDATES:
         if f"{candidate}[day]" not in fields:
             continue
-        if not include_disabled and fields.get(f"{candidate}[enabled]") == "0":
+        if not include_disabled and fields.get(f"{candidate}[enabled]") != "1":
             continue
         return candidate
     return None
@@ -263,7 +303,7 @@ def get_activity_dates(
         if f"{name}[day]" not in form_fields:
             result[name] = None
             continue
-        if form_fields.get(f"{name}[enabled]") == "0":
+        if form_fields.get(f"{name}[enabled]") != "1":
             result[name] = None
             continue
         try:
@@ -454,22 +494,27 @@ def set_activity_sep(
     new_due_date: datetime,
 ) -> dict:
     """
-    SEP: disable cutoffdate and set duedate in a single form submission.
+    SEP: set the end date for an activity in a single form submission.
+
+    For assignments: disables cutoffdate and sets duedate.
+    For quizzes: sets timeclose.
 
     Returns a result dict with success status.
     """
     resp = session.get(f"/course/modedit.php?update={cmid}&return=0&sr=0")
     fields, action = _parse_form(resp.text)
 
-    # Set the new due date.
-    if f"duedate[day]" not in fields:
+    if f"duedate[day]" in fields:
+        # Assignment: set duedate and disable cutoffdate.
+        _set_date_fields(fields, "duedate", new_due_date)
+        fields.pop("cutoffdate[enabled]", None)
+    elif f"timeclose[day]" in fields:
+        # Quiz: set timeclose.
+        _set_date_fields(fields, "timeclose", new_due_date)
+    else:
         raise RuntimeError(
-            f"Field 'duedate' not found in the form for cmid={cmid}."
+            f"No supported date field (duedate/timeclose) found for cmid={cmid}."
         )
-    _set_date_fields(fields, "duedate", new_due_date)
-
-    # Disable cutoffdate by removing its [enabled] key.
-    fields.pop("cutoffdate[enabled]", None)
 
     _prepare_for_submission(fields)
     fields["sesskey"] = session.sesskey
