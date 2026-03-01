@@ -141,7 +141,20 @@ moodle sep-forum
 
 ### sep-activities
 
-*(coming soon)*
+Lists all assignments (excluding exams) across starred courses with their due date, cutoff date, and a SEP status column (green `✓` if duedate is last Sunday of August at 23:59 and cutoffdate is disabled, red `✗` otherwise). Prints ready-to-run `activity sep` commands for unconfigured assignments.
+
+```bash
+moodle sep-activities
+```
+
+### activity sep
+
+Disables cutoffdate and sets duedate to the last Sunday of August at 23:59 in a single form submission. Optionally accepts `--date` to override the default date.
+
+```bash
+moodle activity sep --cmid 42
+moodle activity sep --cmid 42 --date "2026-08-30 23:59"
+```
 
 ---
 

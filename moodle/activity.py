@@ -128,8 +128,8 @@ def _parse_form(html: str) -> tuple[dict[str, Any], str]:
     """
     soup = BeautifulSoup(html, "lxml")
 
-    # Moodle's edit form has id="mform1"
-    form = soup.find("form", {"id": "mform1"})
+    # Moodle's edit form has id="mform1" (or "mform1_<token>" in newer versions)
+    form = soup.find("form", id=re.compile(r"^mform1"))
     if form is None:
         # fallback: any form with modedit in its action
         form = soup.find("form", action=re.compile(r"modedit"))
@@ -145,6 +145,9 @@ def _parse_form(html: str) -> tuple[dict[str, Any], str]:
     for tag in form.find_all(["input", "select", "textarea"]):
         name = tag.get("name")
         if not name:
+            continue
+        # Browsers never submit disabled form controls.
+        if tag.has_attr("disabled"):
             continue
 
         if tag.name == "select":
@@ -173,6 +176,48 @@ def _parse_form(html: str) -> tuple[dict[str, Any], str]:
     return fields, action
 
 
+def _prepare_for_submission(fields: dict) -> None:
+    """
+    Clean up parsed form fields to match what Moodle's JS does before submission.
+
+    Moodle forms rely heavily on client-side JavaScript to enable/disable and
+    add/remove fields before the form is actually submitted.  Since we parse the
+    raw HTML without running JS, several adjustments are needed:
+
+    1. Remove date-selector groups whose [enabled] checkbox is "0" — Moodle's JS
+       disables the day/month/year/hour/minute selects when the checkbox is
+       unchecked, so browsers never submit them.
+    2. Set availabilityconditionsjson to a valid empty object if blank — Moodle's
+       JS populates this from its restriction UI.
+    3. Remove the "action" hidden field injected by plagiarism plugins — Moodle's
+       JS clears it before submit.
+    4. Keep only one submit button (submitbutton2) — browsers only send the
+       clicked button.
+    """
+    # 1. Remove disabled date-selector groups.
+    date_bases = {
+        k.rsplit("[", 1)[0]
+        for k in fields
+        if k.endswith("[enabled]") and fields[k] == "0"
+    }
+    for base in date_bases:
+        for part in ("day", "month", "year", "hour", "minute", "enabled", "calendar"):
+            fields.pop(f"{base}[{part}]", None)
+
+    # 2. Fix empty availabilityconditionsjson.
+    if "availabilityconditionsjson" in fields and not fields["availabilityconditionsjson"]:
+        fields["availabilityconditionsjson"] = '{"op":"&","c":[],"showc":[]}'
+
+    # 3. Remove plugin-injected "action" field.
+    fields.pop("action", None)
+
+    # 4. Keep only the "save and return" button.
+    fields.pop("submitbutton", None)
+
+    # 5. Remove the unlock-completion button (not a real submit action).
+    fields.pop("unlockcompletion", None)
+
+
 def _set_date_fields(fields: dict, base_name: str, dt: datetime) -> None:
     """Overwrite the Moodle date-selector fields for a given base name."""
     fields[f"{base_name}[day]"] = str(dt.day)
@@ -198,6 +243,40 @@ def _detect_end_date_field(fields: dict, include_disabled: bool = False) -> str 
             continue
         return candidate
     return None
+
+
+def get_activity_dates(
+    session: MoodleSession,
+    cmid: int,
+    date_fields: list[str],
+) -> dict[str, datetime | None]:
+    """
+    Return the current value of each requested date field for a course module.
+
+    Only returns a datetime if the field exists and is enabled; otherwise None.
+    """
+    resp = session.get(f"/course/modedit.php?update={cmid}&return=0&sr=0")
+    form_fields, _ = _parse_form(resp.text)
+
+    result: dict[str, datetime | None] = {}
+    for name in date_fields:
+        if f"{name}[day]" not in form_fields:
+            result[name] = None
+            continue
+        if form_fields.get(f"{name}[enabled]") == "0":
+            result[name] = None
+            continue
+        try:
+            result[name] = datetime(
+                year=int(form_fields[f"{name}[year]"]),
+                month=int(form_fields[f"{name}[month]"]),
+                day=int(form_fields[f"{name}[day]"]),
+                hour=int(form_fields[f"{name}[hour]"]),
+                minute=int(form_fields[f"{name}[minute]"]),
+            )
+        except (ValueError, KeyError):
+            result[name] = None
+    return result
 
 
 def get_activity_html(session: MoodleSession, cmid: int) -> str:
@@ -234,6 +313,7 @@ def set_activity_html(
         )
 
     fields["introeditor[text]"] = new_html
+    _prepare_for_submission(fields)
     fields["sesskey"] = session.sesskey
 
     if dry_run:
@@ -325,7 +405,8 @@ def set_activity_end_date(
     # Inject our new date values.
     _set_date_fields(fields, end_field, new_end_date)
 
-    # Moodle always requires sesskey in form submissions.
+    # Clean up fields to match browser JS behavior.
+    _prepare_for_submission(fields)
     fields["sesskey"] = session.sesskey
 
     if dry_run:
@@ -348,7 +429,7 @@ def set_activity_end_date(
     # A remaining modedit URL in history means it stayed on the form (error).
     success = "modedit.php" not in post_resp.url
 
-    return {
+    result: dict = {
         "success": success,
         "cmid": cmid,
         "end_date_field": end_field,
@@ -356,3 +437,84 @@ def set_activity_end_date(
         "dry_run": False,
         "final_url": post_resp.url,
     }
+
+    result["_history"] = [
+        (r.status_code, r.url) for r in post_resp.history
+    ] + [(post_resp.status_code, post_resp.url)]
+
+    if not success:
+        result["_response_html"] = post_resp.text
+
+    return result
+
+
+def set_activity_sep(
+    session: MoodleSession,
+    cmid: int,
+    new_due_date: datetime,
+) -> dict:
+    """
+    SEP: disable cutoffdate and set duedate in a single form submission.
+
+    Returns a result dict with success status.
+    """
+    resp = session.get(f"/course/modedit.php?update={cmid}&return=0&sr=0")
+    fields, action = _parse_form(resp.text)
+
+    # Set the new due date.
+    if f"duedate[day]" not in fields:
+        raise RuntimeError(
+            f"Field 'duedate' not found in the form for cmid={cmid}."
+        )
+    _set_date_fields(fields, "duedate", new_due_date)
+
+    # Disable cutoffdate by removing its [enabled] key.
+    fields.pop("cutoffdate[enabled]", None)
+
+    _prepare_for_submission(fields)
+    fields["sesskey"] = session.sesskey
+
+    if not action.startswith("http"):
+        action = urljoin(session.site + "/course/modedit.php", action)
+
+    post_resp = session.post(action, data=fields)
+    success = "modedit.php" not in post_resp.url
+
+    result: dict = {
+        "success": success,
+        "cmid": cmid,
+        "new_due_date": new_due_date,
+        "final_url": post_resp.url,
+    }
+
+    if not success:
+        result["_history"] = [
+            (r.status_code, r.url) for r in post_resp.history
+        ] + [(post_resp.status_code, post_resp.url)]
+        result["_response_html"] = post_resp.text
+
+    return result
+
+
+def disable_activity_date(session: MoodleSession, cmid: int, field: str) -> None:
+    """
+    Disable a date field for a course module without changing its value.
+
+    Omitting the [enabled] key from the POST is the browser-native way to
+    uncheck a checkbox, which Moodle interprets as disabled.
+    """
+    resp = session.get(f"/course/modedit.php?update={cmid}&return=0&sr=0")
+    fields, action = _parse_form(resp.text)
+
+    if f"{field}[day]" not in fields:
+        raise RuntimeError(f"Field '{field}' not found in the form for cmid={cmid}.")
+
+    # Remove the enabled key so Moodle treats it as unchecked.
+    fields.pop(f"{field}[enabled]", None)
+    _prepare_for_submission(fields)
+    fields["sesskey"] = session.sesskey
+
+    if not action.startswith("http"):
+        action = urljoin(session.site + "/course/modedit.php", action)
+
+    session.post(action, data=fields)

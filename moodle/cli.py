@@ -18,7 +18,7 @@ from rich.table import Table
 from rich import print as rprint
 
 from moodle.session import MoodleSession
-from moodle.activity import get_activity_html, get_activity_info, get_module_raw_html, list_activities, set_activity_end_date, set_activity_html, set_activity_visibility
+from moodle.activity import disable_activity_date, get_activity_dates, get_activity_html, get_activity_info, get_module_raw_html, list_activities, set_activity_end_date, set_activity_html, set_activity_sep, set_activity_visibility
 from moodle.course import list_courses
 
 console = Console()
@@ -249,6 +249,127 @@ def sep_fora(site, cookie):
 
 
 # ---------------------------------------------------------------------------
+# sep-activities
+# ---------------------------------------------------------------------------
+
+@main.command("sep-activities")
+@site_option
+@cookie_option
+def sep_activities(site, cookie):
+    """List all assignments across starred courses with their due date and cutoff date."""
+    with console.status("Connecting to Moodle…"):
+        try:
+            session = MoodleSession.create(site=site, cookie_str=cookie)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    with console.status("Fetching starred courses…"):
+        try:
+            courses = list_courses(session, starred=True)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    if not courses:
+        console.print("No starred courses found.")
+        return
+
+    assignments = []
+    for course in courses:
+        with console.status(f"Scanning {course['fullname']}…"):
+            try:
+                activities = list_activities(session, course["id"])
+            except Exception:
+                continue
+            for a in activities:
+                if a["type"] == "assign" and "examen" not in a["name"].lower():
+                    assignments.append({**a, "course_name": course["fullname"]})
+
+    if not assignments:
+        console.print("No assignments found in starred courses.")
+        return
+
+    year = datetime.now().year
+    last_sunday = max(
+        d for d in (datetime(year, 8, day) for day in range(25, 32))
+        if d.weekday() == 6  # Sunday
+    )
+    target_due = last_sunday.replace(hour=23, minute=59)
+
+    for a in assignments:
+        with console.status(f"Fetching dates for {a['name']}…"):
+            try:
+                dates = get_activity_dates(session, a["cmid"], ["duedate", "cutoffdate"])
+                a["_duedate"] = dates["duedate"]
+                a["_cutoffdate"] = dates["cutoffdate"]
+                a["duedate"] = dates["duedate"].strftime("%Y-%m-%d %H:%M") if dates["duedate"] else "—"
+                a["cutoffdate"] = dates["cutoffdate"].strftime("%Y-%m-%d %H:%M") if dates["cutoffdate"] else "—"
+            except Exception:
+                a["_duedate"] = None
+                a["_cutoffdate"] = None
+                a["duedate"] = "—"
+                a["cutoffdate"] = "—"
+
+    table = Table(title=f"Assignments ({len(assignments)})")
+    table.add_column("CMID", style="bold cyan", no_wrap=True)
+    table.add_column("Course", style="bold")
+    table.add_column("Name")
+    table.add_column("Visible", no_wrap=True)
+    table.add_column("Due date", no_wrap=True)
+    table.add_column("Cutoff date", no_wrap=True)
+    table.add_column("SEP", no_wrap=True)
+
+    for a in assignments:
+        visible_str = "[green]yes[/green]" if a["visible"] else "[red]no[/red]"
+        due_ok = (
+            a["_duedate"] is not None
+            and a["_duedate"].year == target_due.year
+            and a["_duedate"].month == target_due.month
+            and a["_duedate"].day == target_due.day
+            and a["_duedate"].hour == target_due.hour
+            and a["_duedate"].minute == target_due.minute
+        )
+        sep_ok = due_ok and a["_cutoffdate"] is None
+        sep_str = "[green]✓[/green]" if sep_ok else "[red]✗[/red]"
+        table.add_row(
+            str(a["cmid"]),
+            a["course_name"],
+            a["name"],
+            visible_str,
+            a["duedate"],
+            a["cutoffdate"],
+            sep_str,
+        )
+
+    console.print(table)
+    console.print()
+
+    pending = [a for a in assignments if not (
+        a["_duedate"] is not None
+        and a["_duedate"].year == target_due.year
+        and a["_duedate"].month == target_due.month
+        and a["_duedate"].day == target_due.day
+        and a["_duedate"].hour == target_due.hour
+        and a["_duedate"].minute == target_due.minute
+        and a["_cutoffdate"] is None
+    )]
+
+    if not pending:
+        console.print("[green]All assignments are correctly configured.[/green]")
+        return
+
+    current_course = None
+    for a in pending:
+        if a["course_name"] != current_course:
+            current_course = a["course_name"]
+            console.print(f"[bold]# {current_course}[/bold]")
+        console.print(f"[dim]# {a['name']}[/dim]")
+        console.print(f'moodle activity sep --cmid {a["cmid"]}')
+        console.print()
+
+
+# ---------------------------------------------------------------------------
 # course list
 # ---------------------------------------------------------------------------
 
@@ -369,6 +490,34 @@ def activity_list(site, cookie, course_id, section_name, mod_type):
         )
 
     console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# activity disable-date
+# ---------------------------------------------------------------------------
+
+@activity.command("disable-date")
+@site_option
+@cookie_option
+@cmid_option
+@click.option("--field", required=True, help="Date field to disable (e.g. cutoffdate).")
+def activity_disable_date(site, cookie, cmid, field):
+    """Disable a date field on an activity without changing its value."""
+    with console.status("Connecting to Moodle…"):
+        try:
+            session = MoodleSession.create(site=site, cookie_str=cookie)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    with console.status(f"Disabling {field} for cmid={cmid}…"):
+        try:
+            disable_activity_date(session, cmid, field)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    console.print(f"[green]Success![/green] {field} disabled for cmid={cmid}.")
 
 
 # ---------------------------------------------------------------------------
@@ -646,6 +795,92 @@ def activity_set_end(site, cookie, cmid, date_str, field, dry_run):
             f"as expected. Final URL: {result.get('final_url')}\n"
             "The change may not have been applied. Check Moodle directly."
         )
+        if result.get("_history"):
+            console.print("[dim]HTTP history:[/dim]")
+            for status, url in result["_history"]:
+                console.print(f"  [dim]{status}  {url}[/dim]")
+        html = result.get("_response_html")
+        if html:
+            import tempfile, os
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".html", prefix="moodle_debug_", delete=False
+            ) as f:
+                f.write(html)
+                debug_path = f.name
+            console.print(f"[dim]Response HTML saved to: {debug_path}[/dim]")
+            console.print(f"[dim]Open with: open {debug_path}[/dim]")
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# activity sep
+# ---------------------------------------------------------------------------
+
+@activity.command("sep")
+@site_option
+@cookie_option
+@cmid_option
+@click.option(
+    "--date", "-d",
+    "date_str",
+    default=None,
+    help='New due date, e.g. "2026-08-30 23:59". Defaults to last Sunday of August at 23:59.',
+)
+def activity_sep(site, cookie, cmid, date_str):
+    """Disable cutoffdate and set duedate in one step (SEP shortcut)."""
+    if date_str:
+        try:
+            new_date = parse_date(date_str)
+        except click.BadParameter as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+    else:
+        year = datetime.now().year
+        last_sunday = max(
+            d for d in (datetime(year, 8, day) for day in range(25, 32))
+            if d.weekday() == 6
+        )
+        new_date = last_sunday.replace(hour=23, minute=59)
+
+    with console.status("Connecting to Moodle…"):
+        try:
+            session = MoodleSession.create(site=site, cookie_str=cookie)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    with console.status(f"Updating cmid={cmid}…"):
+        try:
+            result = set_activity_sep(session, cmid, new_date)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    if result["success"]:
+        console.print(
+            f"[green]Success![/green] cmid={cmid}: "
+            f"cutoffdate disabled, duedate set to [bold]{new_date.strftime('%Y-%m-%d %H:%M')}[/bold]."
+        )
+    else:
+        console.print(
+            f"[red]Warning:[/red] The form was submitted but Moodle did not redirect "
+            f"as expected. Final URL: {result.get('final_url')}\n"
+            "The change may not have been applied. Check Moodle directly."
+        )
+        if result.get("_history"):
+            console.print("[dim]HTTP history:[/dim]")
+            for status, url in result["_history"]:
+                console.print(f"  [dim]{status}  {url}[/dim]")
+        html = result.get("_response_html")
+        if html:
+            import tempfile
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".html", prefix="moodle_debug_", delete=False
+            ) as f:
+                f.write(html)
+                debug_path = f.name
+            console.print(f"[dim]Response HTML saved to: {debug_path}[/dim]")
+            console.print(f"[dim]Open with: open {debug_path}[/dim]")
         sys.exit(1)
 
 
