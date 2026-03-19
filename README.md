@@ -103,7 +103,7 @@ moodle activity set-end --cmid 42 --date "2026-06-30 23:59" --dry-run
 
 ### All options
 
-```
+```bash
 moodle course list
   --site, -s    Base URL of the Moodle site  [env: MOODLE_SITE]
   --cookie, -c  Raw Cookie header string  [env: MOODLE_COOKIE]
@@ -198,7 +198,7 @@ The activity type may use a field name not yet in the detection list. Run with `
 
 ## Project structure
 
-```
+```bash
 moodle-client/
 ├── moodle/
 │   ├── __init__.py
