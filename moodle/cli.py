@@ -18,7 +18,7 @@ from rich.table import Table
 from rich import print as rprint
 
 from moodle.session import MoodleSession
-from moodle.activity import disable_activity_date, get_activity_dates, get_activity_html, get_activity_info, get_module_raw_html, list_activities, set_activity_end_date, set_activity_html, set_activity_sep, set_activity_visibility
+from moodle.activity import disable_activity_date, get_activity_dates, get_activity_html, get_activity_info, get_assign_summaries, get_module_raw_html, list_activities, set_activity_end_date, set_activity_html, set_activity_sep, set_activity_visibility
 from moodle.course import list_courses
 
 console = Console()
@@ -95,6 +95,119 @@ def course():
 @main.group()
 def activity():
     """Commands for managing course activities."""
+
+
+@main.group()
+def assign():
+    """Commands for assignments."""
+
+
+# ---------------------------------------------------------------------------
+# assign list
+# ---------------------------------------------------------------------------
+
+@assign.command("list")
+@site_option
+@cookie_option
+def assign_list(site, cookie):
+    """List all assignments across starred courses with dates and grading info."""
+    with console.status("Connecting to Moodle…"):
+        try:
+            session = MoodleSession.create(site=site, cookie_str=cookie)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    with console.status("Fetching starred courses…"):
+        try:
+            courses = list_courses(session, starred=True)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+    if not courses:
+        console.print("No starred courses found.")
+        return
+
+    assignments = []
+    for c in courses:
+        with console.status(f"Scanning {c['fullname']}…"):
+            try:
+                activities = list_activities(session, c["id"])
+            except Exception:
+                continue
+
+            course_assigns = [
+                {**a, "course_name": c["fullname"], "course_id": c["id"]}
+                for a in activities
+                if a["type"] == "assign" and "examen" not in a["name"].lower()
+            ]
+            if not course_assigns:
+                continue
+
+            try:
+                summaries = get_assign_summaries(session, c["id"])
+            except Exception:
+                summaries = {}
+
+            for a in course_assigns:
+                s = summaries.get(a["cmid"], {"submitted": 0, "needs_grading": 0})
+                a["_needs_grading"] = s["needs_grading"]
+                a["submitted"] = str(s["submitted"])
+                a["needs_grading"] = str(s["needs_grading"])
+
+            assignments.extend(course_assigns)
+
+    if not assignments:
+        console.print("No assignments found in starred courses.")
+        return
+
+    now = datetime.now()
+
+    for a in assignments:
+        with console.status(f"Fetching dates for {a['name']}…"):
+            try:
+                dates = get_activity_dates(session, a["cmid"], ["duedate", "cutoffdate"])
+                a["_cutoffdate"] = dates["cutoffdate"]
+                a["duedate"] = dates["duedate"].strftime("%Y-%m-%d %H:%M") if dates["duedate"] else "—"
+                a["cutoffdate"] = dates["cutoffdate"].strftime("%Y-%m-%d %H:%M") if dates["cutoffdate"] else "—"
+            except Exception:
+                a["_cutoffdate"] = None
+                a["duedate"] = "—"
+                a["cutoffdate"] = "—"
+
+    def _status(a):
+        ng = a["_needs_grading"]
+        if ng == 0:
+            return "\U0001f7e2"  # green
+        cutoff = a["_cutoffdate"]
+        if cutoff is not None and now <= cutoff:
+            return "\U0001f7e0"  # orange
+        return "\U0001f534"  # red
+
+    table = Table(title=f"Assignments ({len(assignments)})")
+    table.add_column("CMID", style="bold cyan", no_wrap=True)
+    table.add_column("Course", style="bold")
+    table.add_column("Name")
+    table.add_column("Due date", no_wrap=True)
+    table.add_column("Cutoff date", no_wrap=True)
+    table.add_column("Submitted", no_wrap=True, justify="right")
+    table.add_column("Needs grading", no_wrap=True, justify="right")
+    table.add_column("", no_wrap=True)
+
+    for a in assignments:
+        table.add_row(
+            str(a["cmid"]),
+            a["course_name"],
+            a["name"],
+            a["duedate"],
+            a["cutoffdate"],
+            a["submitted"],
+            a["needs_grading"],
+            _status(a),
+        )
+
+    console.print(table)
 
 
 # ---------------------------------------------------------------------------

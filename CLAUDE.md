@@ -24,6 +24,10 @@ Moodle forms rely on client-side JavaScript to modify fields before submission. 
 - Keeps only `submitbutton2` (browsers only send the clicked button)
 - Removes the `unlockcompletion` button
 
+## Assign commands
+
+- `assign list` — Lists all assignments (excl. exams) across starred courses with duedate, cutoffdate, submitted count, needs grading count, and a status dot. Submission/grading data is scraped from `/mod/assign/index.php?id=<course_id>` (one request per course). Dates come from the edit form via `get_activity_dates()` (one request per assignment).
+
 ## SEP commands
 
 The `sep-*` commands configure courses for the September exam period, operating on starred courses:

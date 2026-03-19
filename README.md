@@ -83,6 +83,18 @@ moodle activity list --course 123 --type assign
 moodle activity list --course 123 --section "General"
 ```
 
+### List all assignments across starred courses
+
+```bash
+moodle assign list
+```
+
+Shows duedate, cutoffdate, submitted count, needs grading count, and a status indicator for each assignment (excluding exams):
+
+- Green dot — needs grading = 0
+- Orange dot — needs grading > 0, within cutoff date
+- Red dot — needs grading > 0, past cutoff date
+
 ### Show current settings for an activity
 
 ```bash

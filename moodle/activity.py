@@ -541,6 +541,50 @@ def set_activity_sep(
     return result
 
 
+def get_assign_summaries(
+    session: MoodleSession, course_id: int,
+) -> dict[int, dict[str, int]]:
+    """
+    Scrape /mod/assign/index.php?id=<course_id> and return per-assignment stats.
+
+    Returns a dict keyed by cmid, each value having: submitted, needs_grading.
+    """
+    resp = session.get(f"/mod/assign/index.php?id={course_id}")
+    soup = BeautifulSoup(resp.text, "lxml")
+
+    result: dict[int, dict[str, int]] = {}
+
+    for row in soup.find_all("tr"):
+        cells = row.find_all("td")
+        if len(cells) < 5:
+            continue
+
+        # Column c1 has the link with cmid: /mod/assign/view.php?id=<cmid>
+        link = cells[1].find("a", href=re.compile(r"/mod/assign/view\.php\?id=\d+"))
+        if not link:
+            continue
+        m = re.search(r"id=(\d+)", link["href"])
+        if not m:
+            continue
+        cmid = int(m.group(1))
+
+        # Column c3: submitted count
+        submitted = 0
+        m_sub = re.search(r"\d+", cells[3].get_text(strip=True))
+        if m_sub:
+            submitted = int(m_sub.group())
+
+        # Column c4: "Requiere calificación: N" or similar
+        needs_grading = 0
+        m_grade = re.search(r"\d+", cells[4].get_text(strip=True))
+        if m_grade:
+            needs_grading = int(m_grade.group())
+
+        result[cmid] = {"submitted": submitted, "needs_grading": needs_grading}
+
+    return result
+
+
 def disable_activity_date(session: MoodleSession, cmid: int, field: str) -> None:
     """
     Disable a date field for a course module without changing its value.
